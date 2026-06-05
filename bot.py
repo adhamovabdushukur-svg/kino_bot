@@ -2,6 +2,8 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import json
 import os
+from flask import Flask
+from threading import Thread
 
 # BotFather'dan olingan tokenni shu yerga yozing
 TOKEN = '8742765068:AAHnaLpcW88HFVo4dkM7iR2-bjPR3xEvzX4'
@@ -137,6 +139,20 @@ def send_movie(message):
         if not movie_code.startswith('/'):
             bot.reply_to(message, "❌ Kechirasiz, bu kod bilan kino topilmadi.\nIltimos, to'g'ri kod yuboring.")
 
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Kino Bot ishlayapti!"
+
+def run_http_server():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
+
 if __name__ == '__main__':
+    # Render uchun majburiy veb-serverni orqa fonda ishga tushirish
+    server_thread = Thread(target=run_http_server)
+    server_thread.start()
+
     print("Bot ishga tushdi...")
     bot.polling(none_stop=True)
