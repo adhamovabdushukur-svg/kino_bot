@@ -6,11 +6,11 @@ from flask import Flask
 from threading import Thread
 
 # BotFather'dan olingan tokenni shu yerga yozing
-TOKEN = '8742765068:AAHnaLpcW88HFVo4dkM7iR2-bjPR3xEvzX4'
+TOKEN = os.environ.get('BOT_TOKEN', '8742765068:AAHnaLpcW88HFVo4dkM7iR2-bjPR3xEvzX4')
 bot = telebot.TeleBot(TOKEN)
 
 DATA_FILE = 'movies.json'
-REQUIRED_CHANNEL = '@abdurahim2011' # Majburiy a'zolik kanali
+REQUIRED_CHANNEL = os.environ.get('CHANNEL_ID', '@abdurahim2011') # Majburiy a'zolik kanali
 
 # Baza yo'q bo'lsa, yaratamiz
 if not os.path.exists(DATA_FILE):
