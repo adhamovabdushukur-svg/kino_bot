@@ -2,6 +2,7 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import json
 import os
+import sqlite3
 from flask import Flask
 from threading import Thread
 
@@ -10,20 +11,83 @@ TOKEN = os.environ.get('BOT_TOKEN', '8742765068:AAHnaLpcW88HFVo4dkM7iR2-bjPR3xEv
 bot = telebot.TeleBot(TOKEN)
 
 DATA_FILE = 'movies.json'
+DB_FILE = 'database.db'
 REQUIRED_CHANNEL = os.environ.get('CHANNEL_ID', '@abdurahim2011') # Majburiy a'zolik kanali
 
-# Baza yo'q bo'lsa, yaratamiz
-if not os.path.exists(DATA_FILE):
-    with open(DATA_FILE, 'w') as f:
-        json.dump({"admin_id": None, "movies": {}}, f)
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS movies (
+            code INTEGER PRIMARY KEY,
+            file_id TEXT
+        )
+    ''')
+    
+    # Migratsiya: Agar eski movies.json bo'lsa, undan ma'lumotlarni bazaga o'tkazamiz
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, 'r') as f:
+                data = json.load(f)
+            
+            if data.get('admin_id') is not None:
+                cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('admin_id', ?)", (str(data['admin_id']),))
+            
+            for code, file_id in data.get('movies', {}).items():
+                cursor.execute("INSERT OR IGNORE INTO movies (code, file_id) VALUES (?, ?)", (int(code), file_id))
+            
+            conn.commit()
+            # Qayta migratsiya bo'lmasligi uchun fayl nomini o'zgartirib qo'yamiz
+            os.rename(DATA_FILE, 'movies_backup.json')
+            print("Ma'lumotlar JSON dan SQLite ga o'tkazildi.")
+        except Exception as e:
+            print(f"Migratsiyada xatolik: {e}")
 
-def load_data():
-    with open(DATA_FILE, 'r') as f:
-        return json.load(f)
+    conn.commit()
+    conn.close()
 
-def save_data(data):
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data, f, indent=4)
+def get_admin_id():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key='admin_id'")
+    row = cursor.fetchone()
+    conn.close()
+    return int(row[0]) if row and row[0] != 'None' else None
+
+def set_admin_id(admin_id):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('admin_id', ?)", (str(admin_id),))
+    conn.commit()
+    conn.close()
+
+def add_movie(file_id):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT MAX(code) FROM movies")
+    row = cursor.fetchone()
+    next_code = 100 if row[0] is None else row[0] + 1
+    cursor.execute("INSERT INTO movies (code, file_id) VALUES (?, ?)", (next_code, file_id))
+    conn.commit()
+    conn.close()
+    return next_code
+
+def get_movie(code):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT file_id FROM movies WHERE code=?", (code,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+# Bazani ishga tushirish
+init_db()
 
 def check_subscription(user_id):
     try:
@@ -48,13 +112,13 @@ def get_subscription_keyboard():
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    data = load_data()
-    if data['admin_id'] is None:
+    admin_id = get_admin_id()
+    if admin_id is None:
         bot.reply_to(message, "Assalomu alaykum! Bot hozircha sozlanmagan.\nAdmin bo'lish uchun /setadmin buyrug'ini yuboring.")
         return
 
     # Obunani tekshirish (admin uchun majburiy emas, lekin oddiy foydalanuvchilar uchun)
-    if message.from_user.id != data['admin_id'] and not check_subscription(message.from_user.id):
+    if message.from_user.id != admin_id and not check_subscription(message.from_user.id):
         bot.reply_to(message, "❌ **Botdan foydalanish uchun homiy kanalimizga obuna bo'lishingiz kerak!**\n\nIltimos, pastdagi tugma orqali kanalga a'zo bo'ling va 'Tasdiqlash' tugmasini bosing.", reply_markup=get_subscription_keyboard(), parse_mode='Markdown')
         return
 
@@ -62,12 +126,11 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['setadmin'])
 def set_admin(message):
-    data = load_data()
-    if data['admin_id'] is None:
-        data['admin_id'] = message.from_user.id
-        save_data(data)
+    admin_id = get_admin_id()
+    if admin_id is None:
+        set_admin_id(message.from_user.id)
         bot.reply_to(message, "✅ Tabriklayman! Siz bot admini bo'ldingiz.\n\nEndi menga istalgan videoni yuboring (yoki kanaldan forward qiling) va men unga avtomatik tarzda kino kodini (100 dan boshlab) berib, bazaga saqlayman.")
-    elif data['admin_id'] == message.from_user.id:
+    elif admin_id == message.from_user.id:
         bot.reply_to(message, "Siz allaqachon adminsiz. Menga kino yuboring va kino bazasini to'ldiring!")
     else:
         bot.reply_to(message, "Kechirasiz, admin allaqachon tayinlangan.")
@@ -75,27 +138,16 @@ def set_admin(message):
 # Video kelganda ishlashi uchun
 @bot.message_handler(content_types=['video', 'document'])
 def handle_video(message):
-    data = load_data()
+    admin_id = get_admin_id()
     
     # Agar xabar yuborgan odam admin bo'lsa
-    if data['admin_id'] == message.from_user.id:
-        movies = data['movies']
-        
-        # Eng katta kodni topamiz, agar bo'sh bo'lsa 100 dan boshlaymiz
-        if len(movies) == 0:
-            next_code = 100
-        else:
-            # Mavjud kodlarning eng kattasiga 1 qo'shamiz
-            max_code = max([int(k) for k in movies.keys()])
-            next_code = max_code + 1
-            
+    if admin_id == message.from_user.id:
         if message.content_type == 'video':
             file_id = message.video.file_id
         else:
             file_id = message.document.file_id
             
-        data['movies'][str(next_code)] = file_id
-        save_data(data)
+        next_code = add_movie(file_id)
         
         bot.reply_to(message, f"✅ Video bazaga muvaffaqiyatli saqlandi!\n\n🎬 Kino kodi: `{next_code}`", parse_mode='Markdown')
     else:
@@ -113,31 +165,33 @@ def callback_check_sub(call):
 
 @bot.message_handler(func=lambda message: True)
 def send_movie(message):
-    data = load_data()
+    admin_id = get_admin_id()
     
     # Obunani tekshirish
     if not message.text.startswith('/'):
-        if data['admin_id'] is not None and message.from_user.id != data['admin_id']:
+        if admin_id is not None and message.from_user.id != admin_id:
             if not check_subscription(message.from_user.id):
                 bot.reply_to(message, "❌ **Kino yuklab olish uchun kanalimizga obuna bo'lishingiz kerak!**\n\nIltimos, pastdagi tugma orqali kanalga a'zo bo'ling va 'Tasdiqlash' tugmasini bosing.", reply_markup=get_subscription_keyboard(), parse_mode='Markdown')
                 return
 
-    movies = data['movies']
     movie_code = message.text.strip()
     
-    if movie_code in movies:
-        file_id = movies[movie_code]
-        try:
-            bot.send_video(chat_id=message.chat.id, video=file_id, caption=f"🎬 Kino kodi: {movie_code}\n📢 Bizning kanal: {REQUIRED_CHANNEL}")
-        except Exception as e:
+    if movie_code.isdigit():
+        file_id = get_movie(int(movie_code))
+        if file_id:
             try:
-                bot.send_document(chat_id=message.chat.id, document=file_id, caption=f"🎬 Kino kodi: {movie_code}\n📢 Bizning kanal: {REQUIRED_CHANNEL}")
-            except:
-                bot.reply_to(message, "❌ Kechirasiz, videoni yuklashda xatolik yuz berdi. Bu fayl video emas bo'lishi mumkin.")
-                print(f"Xatolik: {e}")
+                bot.send_video(chat_id=message.chat.id, video=file_id, caption=f"🎬 Kino kodi: {movie_code}\n📢 Bizning kanal: {REQUIRED_CHANNEL}")
+            except Exception as e:
+                try:
+                    bot.send_document(chat_id=message.chat.id, document=file_id, caption=f"🎬 Kino kodi: {movie_code}\n📢 Bizning kanal: {REQUIRED_CHANNEL}")
+                except:
+                    bot.reply_to(message, "❌ Kechirasiz, videoni yuklashda xatolik yuz berdi. Bu fayl video emas bo'lishi mumkin.")
+                    print(f"Xatolik: {e}")
+        else:
+            bot.reply_to(message, "❌ Kechirasiz, bu kod bilan kino topilmadi.\nIltimos, to'g'ri kod yuboring.")
     else:
         if not movie_code.startswith('/'):
-            bot.reply_to(message, "❌ Kechirasiz, bu kod bilan kino topilmadi.\nIltimos, to'g'ri kod yuboring.")
+            bot.reply_to(message, "❌ Kechirasiz, kino kodi faqat raqamlardan iborat bo'lishi kerak.")
 
 app = Flask(__name__)
 
