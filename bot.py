@@ -53,6 +53,12 @@ def init_db():
     conn.close()
 
 def get_admin_id():
+    # Avval Render'dagi Environment Variables (Environment yozuvlari) dan qidiramiz
+    env_admin = os.environ.get('ADMIN_ID')
+    if env_admin:
+        return int(env_admin)
+        
+    # Agar Renderda yozilmagan bo'lsa, bazadan qidiramiz
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM settings WHERE key='admin_id'")
