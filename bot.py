@@ -3,6 +3,8 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import json
 import os
 import sqlite3
+import time
+import urllib.request
 from flask import Flask
 from threading import Thread
 
@@ -209,10 +211,27 @@ def run_http_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
+def keep_alive():
+    url = os.environ.get('RENDER_EXTERNAL_URL')
+    if not url:
+        print("RENDER_EXTERNAL_URL topilmadi. Bot o'zini o'zi uyg'ota olmaydi.")
+        return
+    while True:
+        time.sleep(600)  # Har 10 daqiqada (600 soniya) ishlaydi
+        try:
+            urllib.request.urlopen(url)
+            print("Bot o'zini o'zi muvaffaqiyatli uyg'otdi!")
+        except Exception as e:
+            print(f"Uyg'otishda xatolik: {e}")
+
 if __name__ == '__main__':
     # Render uchun majburiy veb-serverni orqa fonda ishga tushirish
     server_thread = Thread(target=run_http_server)
     server_thread.start()
+    
+    # Bot uxlab qolmasligi uchun o'zini o'zi uyg'otib turuvchi tizim
+    keep_alive_thread = Thread(target=keep_alive, daemon=True)
+    keep_alive_thread.start()
 
     print("Bot ishga tushdi...")
     bot.polling(none_stop=True)
